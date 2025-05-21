@@ -2,29 +2,31 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
+using CriWare;
+using TMPro;
 
 public class ChargeSoundEditor : MonoBehaviour
 {
+    [SerializeField] private CriAtomSource atomSource;
     [SerializeField] private AudioSource audioSource;
+    [SerializeField] private AudioClip chargeSound;
     [SerializeField] private KeyCode decelerationKey;
     [SerializeField] private KeyCode chargingKey;
-    [SerializeField] private float chargeInterval = 0.5f;
+    [SerializeField] private TextMeshProUGUI chargeTimeText;
+    [SerializeField] private Image chargeProgressImage;
+    [SerializeField] private Image chargeProgressImageCenter;
+    [SerializeField] private string chargeSoundName;
+    [SerializeField] private AudioClip chargeCompleteSound;
+    [SerializeField] private Color inkLuckingColor;
 
     private float chargeTime = 4 / 60f;
     private float secondChargeTime = -1f;
     private float speedFactor = 20f;
-    private float chargeIntervalCounter = 0f;
-
+    private float currentSpeedFactor = 1f;
     private float soundTimeCounter = -1f;
-
-    // 時間伸縮用の変数
-    private AudioClip originalClip;
-    private float[] clipData;
-    private float readPos = 0f;
-    private float resampleFactor = 1.0f;
-
-    // 再生終了フラグ
-    private bool isPlaybackFinished = false;
+    private float chargeProgress = 0f;
+    private CriAtomExVoicePool voicePool;
+    private bool completeSoundFlag;
 
     public enum Weapon
     {
@@ -32,103 +34,79 @@ public class ChargeSoundEditor : MonoBehaviour
         Bamboozler14Mk1,
         ClassicSquiffer,
         SplatCharger,
-        Eliter4K,
         GooTuber,
-        Snipewriter5H
+        Snipewriter5H,
+        Eliter4K
     }
 
     void Start()
     {
-        originalClip = audioSource.clip;
-        int samples = originalClip.samples * originalClip.channels;
-        clipData = new float[samples];
-        originalClip.GetData(clipData, 0);
-
-        // audioSource.clip を null に設定して、再生時間を無制限にする
-        audioSource.clip = null;
+        voicePool = new CriAtomExStandardVoicePool(1, 2, 96000, false, 100);
+        voicePool.AttachDspTimeStretch();
+        atomSource.player.SetVoicePoolIdentifier(voicePool.identifier);
+        atomSource.player.SetDspTimeStretchRatio(1f);
+        atomSource.cueName = chargeSoundName;
     }
 
     void Update()
     {
-        float currentChargeTime = Input.GetKey(decelerationKey) ? chargeTime * speedFactor : chargeTime;
-
-        // resampleFactor を調整して、音声が指定の時間内に最後まで再生されるようにする
-        resampleFactor = (float)clipData.Length / (currentChargeTime * AudioSettings.outputSampleRate * originalClip.channels);
-
-        if (Input.GetKey(chargingKey))
+        if (Input.GetKeyDown(chargingKey))
         {
-            if (!audioSource.isPlaying)
+            if (atomSource.player.GetStatus() == CriAtomExPlayer.Status.Stop
+            || atomSource.player.GetStatus() == CriAtomExPlayer.Status.PlayEnd
+            || atomSource.player.GetStatus() == CriAtomExPlayer.Status.Prep)
             {
-                chargeIntervalCounter += Time.deltaTime;
-                if (chargeIntervalCounter >= chargeInterval)
-                {
-                    chargeIntervalCounter = 0f;
-                    readPos = 0f; // 読み取り位置をリセット
-                    isPlaybackFinished = false; // 再生終了フラグをリセット
-                    audioSource.Play();
-                    soundTimeCounter = 0f;
-                }
-            }
-        }
-        else
-        {
-            audioSource.Stop();
-            soundTimeCounter = -1f;
-        }
-
-        if (soundTimeCounter >= 0f)
-        {
-            soundTimeCounter += Time.deltaTime;
-            if (!audioSource.isPlaying)
-            {
-                Debug.Log(soundTimeCounter);
-                soundTimeCounter = -1f;
+                atomSource.cueName = chargeSoundName;
+                completeSoundFlag = false;
+                atomSource.Play();
             }
         }
 
         if (Input.GetKeyUp(chargingKey))
         {
-            chargeIntervalCounter = chargeInterval;
+            atomSource.Stop();
+            chargeProgress = 0f;
         }
 
-        // 再生終了フラグが立っていたら、audioSource を停止
-        if (isPlaybackFinished)
+        if (Input.GetKey(chargingKey))
         {
-            audioSource.Stop();
-            isPlaybackFinished = false;
+            chargeProgress += Time.deltaTime / currentSpeedFactor;
+        }
+
+        if (Input.GetKey(decelerationKey))
+        {
+            currentSpeedFactor = speedFactor;
+            chargeProgressImage.color = inkLuckingColor;
+            chargeProgressImageCenter.color = inkLuckingColor;
+        }
+        else
+        {
+            currentSpeedFactor = 1f;
+            chargeProgressImage.color = Color.white;
+            chargeProgressImageCenter.color = Color.white;
+        }
+
+        if (atomSource.cueName == chargeSoundName)
+        {
+            atomSource.player.SetDspTimeStretchRatio(chargeTime * currentSpeedFactor);
+            atomSource.player.UpdateAll();
+        }
+
+        float actualChargeTime = Mathf.Clamp(chargeTime * currentSpeedFactor, 0.25f, 3f);
+        chargeTimeText.text = "音声クリップの長さ : " + (actualChargeTime).ToString("F2") + "s";
+        chargeProgressImage.fillAmount = chargeProgress / chargeTime;
+
+        if (chargeProgress >= chargeTime && !completeSoundFlag)
+        {
+            audioSource.PlayOneShot(chargeCompleteSound);
+            completeSoundFlag = true;
+            Debug.Log("Charge Complete");
         }
     }
 
-    void OnAudioFilterRead(float[] data, int channels)
+    private void OnDestroy()
     {
-        int dataLen = data.Length;
-        int clipLen = clipData.Length;
-
-        for (int i = 0; i < dataLen; i += channels)
-        {
-            // オリジナルクリップから読み取る位置を計算
-            int p = (int)(readPos) * channels;
-            if (p >= clipLen)
-            {
-                // クリップデータの終端に達した場合
-                for (int c = 0; c < channels; c++)
-                {
-                    data[i + c] = 0;
-                }
-                // 再生終了フラグを設定
-                isPlaybackFinished = true;
-                break;
-            }
-            else
-            {
-                for (int c = 0; c < channels; c++)
-                {
-                    data[i + c] = clipData[p + c];
-                }
-            }
-
-            readPos += resampleFactor;
-        }
+        voicePool.Dispose();
     }
 
     [EnumAction(typeof(Weapon))]
@@ -154,7 +132,7 @@ public class ChargeSoundEditor : MonoBehaviour
                 speedFactor = 3f;
                 break;
             case Weapon.GooTuber:
-                chargeTime = 50f / 60f;
+                chargeTime = 71f / 60f;
                 secondChargeTime = 71f / 60f;
                 speedFactor = 3f;
                 break;
@@ -167,5 +145,7 @@ public class ChargeSoundEditor : MonoBehaviour
                 speedFactor = 3f;
                 break;
         }
+        atomSource.player.SetDspTimeStretchRatio(chargeTime);
+        atomSource.player.UpdateAll();
     }
 }
